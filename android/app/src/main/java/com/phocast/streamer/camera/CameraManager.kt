@@ -39,6 +39,17 @@ class CameraManager(
     private var isTorchOn = false
     private val cameraExecutor = Executors.newSingleThreadExecutor()
 
+    var targetWidth = 1920
+    var targetHeight = 1080
+    var targetFps = 30
+
+    fun updateConfig(width: Int, height: Int, fps: Int) {
+        targetWidth = width
+        targetHeight = height
+        targetFps = fps
+        bindCameraUseCases()
+    }
+
     fun startCamera(onReady: () -> Unit) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
@@ -56,11 +67,17 @@ class CameraManager(
 
         val rotation = previewView.display?.rotation ?: Surface.ROTATION_0
         val isPortrait = rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180
-        val targetSize = if (isPortrait) Size(1080, 1920) else Size(1920, 1080)
+        val targetSize = if (isPortrait) Size(targetHeight, targetWidth) else Size(targetWidth, targetHeight)
 
-        // Explicit 1080p ResolutionSelector to prevent CameraX from falling back to low 480p resolution
+        val aspectRatioStrategy = if (targetWidth == 640 && targetHeight == 480) {
+            AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+        } else {
+            AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+        }
+
+        // Configurable ResolutionSelector supporting 480p, 720p, and 1080p
         val resolutionSelector = ResolutionSelector.Builder()
-            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+            .setAspectRatioStrategy(aspectRatioStrategy)
             .setResolutionStrategy(
                 ResolutionStrategy(
                     targetSize,

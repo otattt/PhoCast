@@ -73,6 +73,48 @@ class MainActivity : AppCompatActivity() {
             val tint = if (isOn) Color.parseColor("#FFD600") else Color.WHITE
             binding.btnTorch.setColorFilter(tint)
         }
+
+        // Screen Off / Keep Cool Mode (AMOLED Black Screen + Disable Local GPU Preview)
+        binding.btnDimScreen.setOnClickListener {
+            enterKeepCoolMode()
+        }
+
+        binding.layoutDimOverlay.setOnClickListener {
+            exitKeepCoolMode()
+        }
+
+        // Resolution Selector Chips
+        binding.chipGroupResolution.setOnCheckedChangeListener { _, checkedId ->
+            when (checkedId) {
+                R.id.chip480p -> cameraManager.updateConfig(640, 480, cameraManager.targetFps)
+                R.id.chip720p -> cameraManager.updateConfig(1280, 720, cameraManager.targetFps)
+                R.id.chip1080p -> cameraManager.updateConfig(1920, 1080, cameraManager.targetFps)
+            }
+        }
+
+        // FPS Selector Chips
+        binding.chipGroupFps.setOnCheckedChangeListener { _, checkedId ->
+            when (checkedId) {
+                R.id.chip30Fps -> cameraManager.updateConfig(cameraManager.targetWidth, cameraManager.targetHeight, 30)
+                R.id.chip60Fps -> cameraManager.updateConfig(cameraManager.targetWidth, cameraManager.targetHeight, 60)
+            }
+        }
+    }
+
+    private fun enterKeepCoolMode() {
+        binding.layoutDimOverlay.visibility = android.view.View.VISIBLE
+        binding.previewView.visibility = android.view.View.INVISIBLE
+        val lp = window.attributes
+        lp.screenBrightness = 0.0f
+        window.attributes = lp
+    }
+
+    private fun exitKeepCoolMode() {
+        binding.layoutDimOverlay.visibility = android.view.View.GONE
+        binding.previewView.visibility = android.view.View.VISIBLE
+        val lp = window.attributes
+        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = lp
     }
 
     private fun startStreaming() {
