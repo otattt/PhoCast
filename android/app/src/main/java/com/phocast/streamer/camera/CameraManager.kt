@@ -129,14 +129,17 @@ class CameraManager(
         }
     }
 
+    private val reusableJpegBuffer = ByteArrayOutputStream(256 * 1024)
+
     private fun processImageForStreaming(image: ImageProxy) {
         try {
             val nv21 = yuv420888ToNv21Fast(image)
             val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-            val out = ByteArrayOutputStream(nv21.size / 4)
-            // Quality 85 for sharp Pixel 5 image with high compression efficiency
-            yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
-            val jpegBytes = out.toByteArray()
+            
+            reusableJpegBuffer.reset()
+            // Quality 75: Optimal balance of razor-sharp 1080p visuals and significantly reduced CPU/thermals
+            yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 75, reusableJpegBuffer)
+            val jpegBytes = reusableJpegBuffer.toByteArray()
 
             encoder.broadcastJpegFrame(jpegBytes)
         } catch (e: Exception) {
