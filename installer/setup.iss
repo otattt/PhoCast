@@ -55,13 +55,13 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 ; Completely remove any leftover DirectShow Virtual Camera registry keys that caused crashes/green screens
-Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
-Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\CLSID\{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
-Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\WOW6432Node\CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
-Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\WOW6432Node\CLSID\{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
+Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\CLSID\{{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\{{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
+Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\CLSID\{{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
+Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\WOW6432Node\CLSID\{{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\{{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
+Filename: "reg.exe"; Parameters: "delete ""HKLM\Software\Classes\WOW6432Node\CLSID\{{5C2CD55C-92AD-4999-8666-912BD3E70010}"" /f"; Flags: runhidden
 ; Launch app after install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Remove plugin from OBS Studio on uninstall if installed
-Filename: "cmd.exe"; Parameters: "/c del /f /q ""{autopf}\obs-studio\obs-plugins\64bit\phocast_obs.dll"""; Flags: runhidden
+Filename: "cmd.exe"; Parameters: "/c del /f /q ""{autopf}\obs-studio\obs-plugins\64bit\phocast_obs.dll"""; Flags: runhidden; RunOnceId: "del_phocast_obs"
