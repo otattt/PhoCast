@@ -61,6 +61,11 @@ jobs:
           cd client-pc/rust
           cargo build --release
 
+      - name: Build OBS Studio Plugin DLL
+        run: |
+          cd obs-plugin
+          cargo build --release
+
       - name: Install Inno Setup
         run: |
           choco install innosetup --no-progress
@@ -81,6 +86,13 @@ jobs:
         with:
           name: PhoCast-Windows-Portable
           path: client-pc/rust/target/release/PhoCast.exe
+          if-no-files-found: error
+
+      - name: Upload OBS Studio Plugin DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoCast-OBS-Plugin
+          path: obs-plugin/target/release/phocast_obs.dll
           if-no-files-found: error
 
   publish-release:
@@ -108,6 +120,12 @@ jobs:
           name: PhoCast-Windows-Portable
           path: release-files
 
+      - name: Download OBS Studio Plugin Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PhoCast-OBS-Plugin
+          path: release-files
+
       - name: List Release Files
         run: ls -lh release-files
 
@@ -119,23 +137,26 @@ jobs:
           body: |
             ## 📸 PhoCast v1.0.0 Official Release
 
-            Transform your Android smartphone into a studio-grade 1080p 60FPS webcam for PC and OBS Studio with zero latency!
+            Transform your Android smartphone into a studio-grade 1080p 60FPS webcam for PC, OBS Studio, and NVIDIA Broadcast with zero latency!
 
             ### 📥 Direct Downloads (No Extraction Needed):
-            * 📱 **Android Phone App:** [**`PhoCast-v1.0.0.apk`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast-v1.0.0.apk) (Direct install on Android)
-            * 💻 **Windows All-in-One Installer:** [**`PhoCast-Setup-v1.0.0.exe`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast-Setup-v1.0.0.exe) (Bundles Client + DirectShow Camera Driver)
-            * 📦 **Windows Standalone Portable:** [**`PhoCast.exe`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast.exe) (Standalone executable)
+            * 📱 **Android Phone App:** [**`PhoCast-v1.0.0.apk`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast-v1.0.0.apk) (Direct install on Android phone)
+            * 💻 **Windows All-in-One Installer:** [**`PhoCast-Setup-v1.0.0.exe`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast-Setup-v1.0.0.exe) (Bundles Client + OBS Plugin auto-installer + Driver cleaner)
+            * 🎥 **OBS Studio Native Plugin:** [**`phocast_obs.dll`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/phocast_obs.dll) (Place into `C:\Program Files\obs-studio\obs-plugins\64bit\`)
+            * 📦 **Windows Standalone Portable Client:** [**`PhoCast.exe`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast.exe) (Standalone executable)
 
             ---
             ### 🌟 Highlights:
+            * **Native OBS Studio Plugin (`phocast_obs.dll`):** Direct stream ingestion into OBS Studio graphics pipeline. Zero intermediate virtual camera drivers, zero crashes, zero green screens.
+            * **NVIDIA Broadcast & Discord Ready:** Feed PhoCast directly into OBS Studio, then click **Start Virtual Camera** in OBS to broadcast crystal-clear video to NVIDIA Broadcast, Discord, Zoom, and Teams!
             * **Zero Latency:** Ultra-fast bulk YUV conversion and drop-frame policy over USB (ADB) or Wi-Fi.
             * **Crisp 1080p / 60 FPS:** Full HD resolution selection natively tailored for Google Pixel and modern smartphones.
-            * **OBS Studio Native Driver:** DirectShow virtual camera recognized immediately as `PhoCast Camera` in Video Capture Device, Zoom, Discord, and Meet.
             * **Keep Cool (Screen Off) Mode:** AMOLED pitch-black screen with GPU rendering paused to keep phone cool during long streams.
           files: |
             release-files/PhoCast-v1.0.0.apk
             release-files/PhoCast-Setup-v1.0.0.exe
             release-files/PhoCast.exe
+            release-files/phocast_obs.dll
           draft: false
           prerelease: false
         env:

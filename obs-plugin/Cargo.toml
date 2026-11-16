@@ -1,0 +1,12 @@
+[package]
+name = "phocast-obs"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "phocast_obs"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader"] }
+zune-jpeg = "0.4"
