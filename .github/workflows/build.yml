@@ -55,9 +55,17 @@ jobs:
           cd client-pc/rust
           cargo build --release
 
-      - name: Upload Windows Native Client EXE
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress
+
+      - name: Build All-in-One Windows Installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
+
+      - name: Upload Windows All-in-One Installer
         uses: actions/upload-artifact@v4
         with:
-          name: PhoCast-Windows-EXE
-          path: client-pc/rust/target/release/PhoCast.exe
+          name: PhoCast-Windows-Installer
+          path: dist/PhoCast-Setup-v1.0.0.exe
           if-no-files-found: error
