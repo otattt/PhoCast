@@ -109,8 +109,8 @@ impl PhoCastApp {
             let mut stream = match TcpStream::connect(&target_addr) {
                 Ok(s) => {
                     s.set_nodelay(true).ok();
-                    s.set_read_timeout(Some(Duration::from_secs(5))).ok();
-                    *status_message.lock().unwrap() = format!("Connected to {}", target_addr);
+                    s.set_read_timeout(Some(Duration::from_secs(15))).ok();
+                    *status_message.lock().unwrap() = format!("Connected to {}. Waiting for video...", target_addr);
                     s
                 }
                 Err(e) => {
