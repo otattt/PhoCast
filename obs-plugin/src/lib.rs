@@ -2,7 +2,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -175,17 +175,24 @@ unsafe fn init_obs_api() {
 }
 
 // ============================================================================
-// PhoCast Source Implementation
+// PhoCast Source Implementation with Decoupled Real-Time Architecture
 // ============================================================================
 
+struct FrameSlot {
+    data: Mutex<Option<Vec<u8>>>,
+    condvar: Condvar,
+}
+
 struct PhoCastSource {
-    _source: usize, // raw pointer to obs_source_t stored as usize for thread safety
+    _source: usize,
     ip: Arc<Mutex<String>>,
     port: Arc<AtomicU16>,
     running: Arc<AtomicBool>,
     width: Arc<AtomicU32>,
     height: Arc<AtomicU32>,
-    thread_handle: Option<JoinHandle<()>>,
+    frame_slot: Arc<FrameSlot>,
+    net_thread: Option<JoinHandle<()>>,
+    decode_thread: Option<JoinHandle<()>>,
 }
 
 impl PhoCastSource {
@@ -195,16 +202,31 @@ impl PhoCastSource {
         let running_arc = Arc::new(AtomicBool::new(true));
         let width_arc = Arc::new(AtomicU32::new(1920));
         let height_arc = Arc::new(AtomicU32::new(1080));
+        let frame_slot = Arc::new(FrameSlot {
+            data: Mutex::new(None),
+            condvar: Condvar::new(),
+        });
 
         let s_ptr_num = source_ptr as usize;
-        let t_ip = Arc::clone(&ip_arc);
-        let t_port = Arc::clone(&port_arc);
-        let t_running = Arc::clone(&running_arc);
-        let t_width = Arc::clone(&width_arc);
-        let t_height = Arc::clone(&height_arc);
 
-        let handle = thread::spawn(move || {
-            worker_loop(s_ptr_num, t_ip, t_port, t_running, t_width, t_height);
+        // 1. Decoder & Render Worker Thread (Always grabs the LATEST frame, drops stale backlog)
+        let dec_slot = Arc::clone(&frame_slot);
+        let dec_running = Arc::clone(&running_arc);
+        let dec_w = Arc::clone(&width_arc);
+        let dec_h = Arc::clone(&height_arc);
+
+        let decode_handle = thread::spawn(move || {
+            decoder_loop(s_ptr_num, dec_slot, dec_running, dec_w, dec_h);
+        });
+
+        // 2. High-Speed Network Receiver Thread (Drains socket at max line rate, 0 TCP buffer bloat)
+        let net_slot = Arc::clone(&frame_slot);
+        let net_running = Arc::clone(&running_arc);
+        let net_ip = Arc::clone(&ip_arc);
+        let net_port = Arc::clone(&port_arc);
+
+        let net_handle = thread::spawn(move || {
+            network_loop(net_slot, net_running, net_ip, net_port);
         });
 
         Box::new(PhoCastSource {
@@ -214,28 +236,32 @@ impl PhoCastSource {
             running: running_arc,
             width: width_arc,
             height: height_arc,
-            thread_handle: Some(handle),
+            frame_slot,
+            net_thread: Some(net_handle),
+            decode_thread: Some(decode_handle),
         })
     }
 
     fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
-        if let Some(h) = self.thread_handle.take() {
+        self.frame_slot.condvar.notify_all();
+
+        if let Some(h) = self.net_thread.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.decode_thread.take() {
             let _ = h.join();
         }
     }
 }
 
-fn worker_loop(
-    source_ptr_num: usize,
+fn network_loop(
+    slot: Arc<FrameSlot>,
+    running: Arc<AtomicBool>,
     ip_arc: Arc<Mutex<String>>,
     port_arc: Arc<AtomicU16>,
-    running: Arc<AtomicBool>,
-    out_width: Arc<AtomicU32>,
-    out_height: Arc<AtomicU32>,
 ) {
     let mut header_buf = [0u8; 4];
-    let mut frame_buf = Vec::with_capacity(512 * 1024);
 
     while running.load(Ordering::SeqCst) {
         let ip = {
@@ -245,13 +271,9 @@ fn worker_loop(
         let port = port_arc.load(Ordering::SeqCst);
         let addr_str = format!("{}:{}", ip, port);
 
-        // Attempt TCP connection to PhoCast server (phone or local forwarder)
         let stream = match addr_str.parse::<SocketAddr>() {
             Ok(addr) => TcpStream::connect_timeout(&addr, Duration::from_millis(1500)),
-            Err(_) => {
-                // Try resolving hostname/ip
-                TcpStream::connect(&addr_str)
-            }
+            Err(_) => TcpStream::connect(&addr_str),
         };
 
         let mut stream = match stream {
@@ -261,69 +283,94 @@ fn worker_loop(
                 s
             }
             Err(_) => {
-                // Connection failed: sleep briefly and retry
                 thread::sleep(Duration::from_millis(1000));
                 continue;
             }
         };
 
-        // Streaming loop while connected
+        // Streaming ingestion loop
         while running.load(Ordering::SeqCst) {
-            // Read 4-byte frame length
             if let Err(_) = stream.read_exact(&mut header_buf) {
-                break; // Reconnect on read failure
+                break;
             }
 
             let frame_len = u32::from_be_bytes(header_buf) as usize;
             if frame_len == 0 || frame_len > 15_000_000 {
-                break; // Invalid frame length, reconnect
+                break;
             }
 
-            // Read exact JPEG frame payload
-            frame_buf.resize(frame_len, 0);
+            let mut frame_buf = vec![0u8; frame_len];
             if let Err(_) = stream.read_exact(&mut frame_buf) {
-                break; // Reconnect on read failure
+                break;
             }
 
-            // Decode JPEG directly into RGBA using high-performance SIMD decoder
-            let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
-            let mut decoder = JpegDecoder::new_with_options(&frame_buf, options);
-
-            match decoder.decode() {
-                Ok(mut rgba_pixels) => {
-                    if let Some(info) = decoder.info() {
-                        let w = info.width as u32;
-                        let h = info.height as u32;
-                        out_width.store(w, Ordering::Relaxed);
-                        out_height.store(h, Ordering::Relaxed);
-
-                        unsafe {
-                            if let (Some(output_fn), Some(time_fn)) =
-                                (OBS_API.obs_source_output_video, OBS_API.os_gettime_ns)
-                            {
-                                let mut frame = ObsSourceFrame::default();
-                                frame.data[0] = rgba_pixels.as_mut_ptr();
-                                frame.linesize[0] = w * 4;
-                                frame.width = w;
-                                frame.height = h;
-                                frame.timestamp = time_fn();
-                                frame.format = VIDEO_FORMAT_RGBA;
-                                frame.full_range = true;
-                                frame.max_luminance = 10000;
-
-                                output_fn(source_ptr_num as *mut c_void, &frame);
-                            }
-                        }
-                    }
-                }
-                Err(_) => {
-                    // Skip corrupted frame
-                }
+            // Instantly replace the single-slot buffer. If decoder was busy, older frame is dropped immediately!
+            {
+                let mut guard = slot.data.lock().unwrap();
+                *guard = Some(frame_buf);
+                slot.condvar.notify_one();
             }
         }
 
-        // Connection dropped: wait a bit before attempting reconnect
         thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn decoder_loop(
+    source_ptr_num: usize,
+    slot: Arc<FrameSlot>,
+    running: Arc<AtomicBool>,
+    out_width: Arc<AtomicU32>,
+    out_height: Arc<AtomicU32>,
+) {
+    while running.load(Ordering::SeqCst) {
+        let frame_payload = {
+            let mut guard = slot.data.lock().unwrap();
+            while guard.is_none() && running.load(Ordering::SeqCst) {
+                guard = slot.condvar.wait(guard).unwrap();
+            }
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+            // Takes the latest frame from the slot
+            guard.take()
+        };
+
+        let frame_payload = match frame_payload {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // SIMD accelerated RGBA JPEG decoding
+        let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+        let mut decoder = JpegDecoder::new_with_options(&frame_payload, options);
+
+        if let Ok(mut rgba_pixels) = decoder.decode() {
+            if let Some(info) = decoder.info() {
+                let w = info.width as u32;
+                let h = info.height as u32;
+                out_width.store(w, Ordering::Relaxed);
+                out_height.store(h, Ordering::Relaxed);
+
+                unsafe {
+                    if let (Some(output_fn), Some(time_fn)) =
+                        (OBS_API.obs_source_output_video, OBS_API.os_gettime_ns)
+                    {
+                        let mut frame = ObsSourceFrame::default();
+                        frame.data[0] = rgba_pixels.as_mut_ptr();
+                        frame.linesize[0] = w * 4;
+                        frame.width = w;
+                        frame.height = h;
+                        frame.timestamp = time_fn();
+                        frame.format = VIDEO_FORMAT_RGBA;
+                        frame.full_range = true;
+                        frame.max_luminance = 10000;
+
+                        output_fn(source_ptr_num as *mut c_void, &frame);
+                    }
+                }
+            }
+        }
     }
 }
 

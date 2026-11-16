@@ -198,53 +198,56 @@ impl PhoCastApp {
                     }
                 }
 
-                if let Ok(img) = image::load_from_memory(&img_bytes) {
-                    let (w, h) = img.dimensions();
-                    let (w, h) = (w as usize, h as usize);
+                let options = zune_jpeg::zune_core::options::DecoderOptions::default()
+                    .jpeg_set_out_colorspace(zune_jpeg::zune_core::colorspace::ColorSpace::RGBA);
+                let mut decoder = zune_jpeg::JpegDecoder::new_with_options(&img_bytes, options);
 
-                    let rgba = img.to_rgba8();
-                    let rgba_raw = rgba.into_raw();
+                if let Ok(rgba_raw) = decoder.decode() {
+                    if let Some(info) = decoder.info() {
+                        let w = info.width as usize;
+                        let h = info.height as usize;
 
-                    // 1. Feed directly into PhoCast Camera (DirectShow for OBS Studio Video Capture Device!)
-                    if let Some(ref mut dshow) = dshow_cam {
-                        dshow.send_frame(w, h, &rgba_raw);
-                    } else {
-                        dshow_cam = PhoCastCameraWriter::try_open();
+                        // 1. Feed directly into PhoCast Camera (DirectShow for OBS Studio Video Capture Device!)
                         if let Some(ref mut dshow) = dshow_cam {
                             dshow.send_frame(w, h, &rgba_raw);
-                        }
-                    }
-
-                    // 2. Feed to OBS Virtual Camera (for Zoom / Meet / Discord - only if initialized)
-                    if let Some(ref mut cam) = vcam {
-                        if w as u32 != vcam_width || h as u32 != vcam_height {
-                            vcam_width = w as u32;
-                            vcam_height = h as u32;
+                        } else {
+                            dshow_cam = PhoCastCameraWriter::try_open();
+                            if let Some(ref mut dshow) = dshow_cam {
+                                dshow.send_frame(w, h, &rgba_raw);
+                            }
                         }
 
-                        // Fast bulk RGBA to BGR conversion without reallocation loop
-                        let mut bgr_buf = vec![0u8; w * h * 3];
-                        for (dst, src) in bgr_buf.chunks_exact_mut(3).zip(rgba_raw.chunks_exact(4)) {
-                            dst[0] = src[2]; // B
-                            dst[1] = src[1]; // G
-                            dst[2] = src[0]; // R
+                        // 2. Feed to OBS Virtual Camera (for Zoom / Meet / Discord - only if initialized)
+                        if let Some(ref mut cam) = vcam {
+                            if w as u32 != vcam_width || h as u32 != vcam_height {
+                                vcam_width = w as u32;
+                                vcam_height = h as u32;
+                            }
+
+                            // Fast bulk RGBA to BGR conversion without reallocation loop
+                            let mut bgr_buf = vec![0u8; w * h * 3];
+                            for (dst, src) in bgr_buf.chunks_exact_mut(3).zip(rgba_raw.chunks_exact(4)) {
+                                dst[0] = src[2]; // B
+                                dst[1] = src[1]; // G
+                                dst[2] = src[0]; // R
+                            }
+                            let _ = cam.send(&bgr_buf);
                         }
-                        let _ = cam.send(&bgr_buf);
-                    }
 
-                    // Update UI preview frame (move raw buffer to prevent unnecessary copy)
-                    *latest_frame.lock().unwrap() = Some(VideoFrame {
-                        width: w,
-                        height: h,
-                        rgba_bytes: rgba_raw,
-                    });
+                        // Update UI preview frame (move raw buffer to prevent unnecessary copy)
+                        *latest_frame.lock().unwrap() = Some(VideoFrame {
+                            width: w,
+                            height: h,
+                            rgba_bytes: rgba_raw,
+                        });
 
-                    frame_count += 1;
-                    if last_fps_time.elapsed().as_secs() >= 1 {
-                        let fps = frame_count as f32 / last_fps_time.elapsed().as_secs_f32();
-                        *current_fps.lock().unwrap() = fps;
-                        frame_count = 0;
-                        last_fps_time = Instant::now();
+                        frame_count += 1;
+                        if last_fps_time.elapsed().as_secs() >= 1 {
+                            let fps = frame_count as f32 / last_fps_time.elapsed().as_secs_f32();
+                            *current_fps.lock().unwrap() = fps;
+                            frame_count = 0;
+                            last_fps_time = Instant::now();
+                        }
                     }
                 }
             }

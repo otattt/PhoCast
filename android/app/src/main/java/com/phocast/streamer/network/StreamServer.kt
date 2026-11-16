@@ -2,6 +2,7 @@ package com.phocast.streamer.network
 
 import android.util.Log
 import com.phocast.streamer.camera.H264Encoder
+import java.io.BufferedOutputStream
 import java.io.InputStream
 import java.net.ServerSocket
 import java.net.Socket
@@ -45,13 +46,14 @@ class StreamServer(
 
     private fun handleClient(clientSocket: Socket) {
         thread(name = "ClientHandler-${clientSocket.inetAddress.hostAddress}") {
+            var bufferedOut: BufferedOutputStream? = null
             try {
                 clientSocket.tcpNoDelay = true
-                clientSocket.sendBufferSize = 64 * 1024
-                val out = clientSocket.getOutputStream()
+                clientSocket.sendBufferSize = 256 * 1024
+                bufferedOut = BufferedOutputStream(clientSocket.getOutputStream(), 128 * 1024)
                 val input: InputStream = clientSocket.getInputStream()
 
-                encoder.addClient(out)
+                encoder.addClient(bufferedOut)
                 clientCount++
                 onClientCountChanged(clientCount)
                 Log.i(TAG, "Client connected: ${clientSocket.inetAddress.hostAddress}")
@@ -66,7 +68,9 @@ class StreamServer(
                 Log.w(TAG, "Client disconnected or error: ${e.message}")
             } finally {
                 try {
-                    encoder.removeClient(clientSocket.getOutputStream())
+                    if (bufferedOut != null) {
+                        encoder.removeClient(bufferedOut)
+                    }
                     clientSocket.close()
                 } catch (_: Exception) {}
                 clientCount = maxOf(0, clientCount - 1)

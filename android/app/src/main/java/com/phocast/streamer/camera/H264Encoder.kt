@@ -2,7 +2,6 @@ package com.phocast.streamer.camera
 
 import android.util.Log
 import java.io.OutputStream
-import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -21,6 +20,7 @@ class H264Encoder(
     @Volatile private var isRunning = false
     private val isSending = AtomicBoolean(false)
     private val sendExecutor = Executors.newSingleThreadExecutor()
+    private val headerBuf = ByteArray(4)
 
     fun addClient(outputStream: OutputStream) {
         clientStreams.add(outputStream)
@@ -43,20 +43,24 @@ class H264Encoder(
 
         // Zero-latency drop-frame policy:
         // If previous frame is still being written over the wire, drop this frame immediately.
-        // This prevents TCP buffer queue accumulation which causes 200ms-500ms delay.
+        // This prevents TCP buffer queue accumulation which causes delay.
         if (!isSending.compareAndSet(false, true)) {
             return
         }
 
         sendExecutor.execute {
             try {
-                // 4-byte big-endian payload length header
-                val header = ByteBuffer.allocate(4).putInt(jpegBytes.size).array()
+                val size = jpegBytes.size
+                headerBuf[0] = (size ushr 24).toByte()
+                headerBuf[1] = (size ushr 16).toByte()
+                headerBuf[2] = (size ushr 8).toByte()
+                headerBuf[3] = size.toByte()
+
                 val deadStreams = mutableListOf<OutputStream>()
 
                 for (stream in clientStreams) {
                     try {
-                        stream.write(header)
+                        stream.write(headerBuf)
                         stream.write(jpegBytes)
                         stream.flush()
                     } catch (e: Exception) {
