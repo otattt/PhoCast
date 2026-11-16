@@ -334,11 +334,30 @@ impl eframe::App for PhoCastApp {
 }
 
 fn main() -> eframe::Result<()> {
+    let icon_bytes = include_bytes!("../assets/icon.ico");
+    let icon_data = if let Ok(img) = image::load_from_memory(icon_bytes) {
+        let rgba = img.to_rgba8();
+        let (w, h) = img.dimensions();
+        Some(egui::IconData {
+            rgba: rgba.into_raw(),
+            width: w,
+            height: h,
+        })
+    } else {
+        None
+    };
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([440.0, 560.0])
+        .with_min_inner_size([380.0, 480.0])
+        .with_title("PhoCast Client");
+
+    if let Some(icon) = icon_data {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([440.0, 560.0])
-            .with_min_inner_size([380.0, 480.0])
-            .with_title("PhoCast Client"),
+        viewport,
         ..Default::default()
     };
 
