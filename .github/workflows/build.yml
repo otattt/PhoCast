@@ -1,15 +1,16 @@
-name: Build PhoCast (Android APK & Windows EXE)
+name: Build & Release PhoCast
 
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-android:
-    name: Build Android APK
+    name: Build Android Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -27,20 +28,25 @@ jobs:
         with:
           gradle-version: 8.7
 
-      - name: Build Android APK
+      - name: Build Android Release APK
         run: |
           cd android
-          gradle assembleDebug --no-daemon
+          gradle assembleRelease --no-daemon
+
+      - name: Copy & Verify APK
+        run: |
+          mkdir -p build-output
+          find android/app/build/outputs/apk/release -name "*.apk" -exec cp {} build-output/PhoCast-v1.0.0.apk \;
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: PhoCast-Android-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: build-output/PhoCast-v1.0.0.apk
           if-no-files-found: error
 
   build-windows:
-    name: Build Windows Native Client (EXE)
+    name: Build Windows Native Client & Installer
     runs-on: windows-latest
 
     steps:
@@ -69,3 +75,68 @@ jobs:
           name: PhoCast-Windows-Installer
           path: dist/PhoCast-Setup-v1.0.0.exe
           if-no-files-found: error
+
+      - name: Upload Windows Portable Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoCast-Windows-Portable
+          path: client-pc/rust/target/release/PhoCast.exe
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Direct GitHub Release v1.0.0
+    needs: [build-android, build-windows]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download Android Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PhoCast-Android-APK
+          path: release-files
+
+      - name: Download Windows Installer Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PhoCast-Windows-Installer
+          path: release-files
+
+      - name: Download Windows Portable Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PhoCast-Windows-Portable
+          path: release-files
+
+      - name: List Release Files
+        run: ls -lh release-files
+
+      - name: Create or Update GitHub Release v1.0.0
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "PhoCast v1.0.0 - Studio Webcam Bridge"
+          body: |
+            ## 📸 PhoCast v1.0.0 Official Release
+
+            Transform your Android smartphone into a studio-grade 1080p 60FPS webcam for PC and OBS Studio with zero latency!
+
+            ### 📥 Direct Downloads (No Extraction Needed):
+            * 📱 **Android Phone App:** [**`PhoCast-v1.0.0.apk`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast-v1.0.0.apk) (Direct install on Android)
+            * 💻 **Windows All-in-One Installer:** [**`PhoCast-Setup-v1.0.0.exe`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast-Setup-v1.0.0.exe) (Bundles Client + DirectShow Camera Driver)
+            * 📦 **Windows Standalone Portable:** [**`PhoCast.exe`**](https://github.com/${{ github.repository }}/releases/download/v1.0.0/PhoCast.exe) (Standalone executable)
+
+            ---
+            ### 🌟 Highlights:
+            * **Zero Latency:** Ultra-fast bulk YUV conversion and drop-frame policy over USB (ADB) or Wi-Fi.
+            * **Crisp 1080p / 60 FPS:** Full HD resolution selection natively tailored for Google Pixel and modern smartphones.
+            * **OBS Studio Native Driver:** DirectShow virtual camera recognized immediately as `PhoCast Camera` in Video Capture Device, Zoom, Discord, and Meet.
+            * **Keep Cool (Screen Off) Mode:** AMOLED pitch-black screen with GPU rendering paused to keep phone cool during long streams.
+          files: |
+            release-files/PhoCast-v1.0.0.apk
+            release-files/PhoCast-Setup-v1.0.0.exe
+            release-files/PhoCast.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
