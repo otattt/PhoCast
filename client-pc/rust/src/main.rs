@@ -170,26 +170,29 @@ impl PhoCastApp {
                         dshow.send_frame(w, h, &rgba_raw);
                     } else {
                         dshow_cam = PhoCastCameraWriter::try_open();
+                        if let Some(ref mut dshow) = dshow_cam {
+                            dshow.send_frame(w, h, &rgba_raw);
+                        }
                     }
 
-                    // 2. Feed to OBS Virtual Camera (for Zoom / Meet / Discord)
+                    // 2. Feed to OBS Virtual Camera (for Zoom / Meet / Discord - only if initialized)
                     if let Some(ref mut cam) = vcam {
                         if w as u32 != vcam_width || h as u32 != vcam_height {
                             vcam_width = w as u32;
                             vcam_height = h as u32;
                         }
 
-                        // Convert RGBA to BGR
-                        let mut bgr_buf = Vec::with_capacity(w * h * 3);
-                        for chunk in rgba_raw.chunks_exact(4) {
-                            bgr_buf.push(chunk[2]); // B
-                            bgr_buf.push(chunk[1]); // G
-                            bgr_buf.push(chunk[0]); // R
+                        // Fast bulk RGBA to BGR conversion without reallocation loop
+                        let mut bgr_buf = vec![0u8; w * h * 3];
+                        for (dst, src) in bgr_buf.chunks_exact_mut(3).zip(rgba_raw.chunks_exact(4)) {
+                            dst[0] = src[2]; // B
+                            dst[1] = src[1]; // G
+                            dst[2] = src[0]; // R
                         }
                         let _ = cam.send(&bgr_buf);
                     }
 
-                    // Update UI preview frame
+                    // Update UI preview frame (move raw buffer to prevent unnecessary copy)
                     *latest_frame.lock().unwrap() = Some(VideoFrame {
                         width: w,
                         height: h,
