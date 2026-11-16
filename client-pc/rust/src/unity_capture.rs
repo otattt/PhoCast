@@ -24,29 +24,27 @@ pub struct SharedMemHeader {
     pub timeout: i32,
 }
 
-pub struct PhoCastCameraWriter {
+struct DeviceSlot {
     h_mutex: HANDLE,
+    h_want: HANDLE,
     h_sent: HANDLE,
     h_file: HANDLE,
     header: *mut SharedMemHeader,
     data_ptr: *mut u8,
 }
 
-unsafe impl Send for PhoCastCameraWriter {}
-unsafe impl Sync for PhoCastCameraWriter {}
+unsafe impl Send for DeviceSlot {}
+unsafe impl Sync for DeviceSlot {}
 
-fn to_wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-impl PhoCastCameraWriter {
-    pub fn try_open() -> Option<Self> {
+impl DeviceSlot {
+    fn try_create(mutx_name: &str, want_name: &str, sent_name: &str, data_name: &str) -> Option<Self> {
         unsafe {
-            let data_w = to_wide("UnityCapture_Data0");
-            let mutx_w = to_wide("UnityCapture_Mutx0");
-            let sent_w = to_wide("UnityCapture_Sent0");
+            let data_w = to_wide(data_name);
+            let mutx_w = to_wide(mutx_name);
+            let want_w = to_wide(want_name);
+            let sent_w = to_wide(sent_name);
 
-            // 1. Open or create shared memory file mapping
+            // 1. Shared Memory File Mapping
             let mut h_file = OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, data_w.as_ptr());
             if h_file.is_null() {
                 h_file = CreateFileMappingW(
@@ -58,28 +56,36 @@ impl PhoCastCameraWriter {
                     data_w.as_ptr(),
                 );
             }
-
             if h_file.is_null() {
                 return None;
             }
 
-            // 2. Open or create Mutex
+            // 2. Mutex
             let mut h_mutex = OpenMutexW(MUTEX_ALL_ACCESS, 0, mutx_w.as_ptr());
             if h_mutex.is_null() {
                 h_mutex = CreateMutexW(std::ptr::null(), 0, mutx_w.as_ptr());
             }
 
-            // 3. Open or create Sent Event
+            // 3. WantFrame Event (MUST BE CREATED by sender so DirectShow receiver can open it!)
+            let mut h_want = OpenEventW(EVENT_ALL_ACCESS, 0, want_w.as_ptr());
+            if h_want.is_null() {
+                h_want = CreateEventW(std::ptr::null(), 0, 0, want_w.as_ptr());
+            }
+
+            // 4. SentFrame Event
             let mut h_sent = OpenEventW(EVENT_ALL_ACCESS, 0, sent_w.as_ptr());
             if h_sent.is_null() {
                 h_sent = CreateEventW(std::ptr::null(), 0, 0, sent_w.as_ptr());
             }
 
-            // 4. Map the memory view into our address space
+            // 5. Map View
             let view = MapViewOfFile(h_file, FILE_MAP_ALL_ACCESS, 0, 0, 0);
             if !view.Value.is_null() {
                 let header = view.Value as *mut SharedMemHeader;
                 (*header).max_size = MAX_IMAGE_SIZE;
+                (*header).width = 1280;
+                (*header).height = 720;
+                (*header).stride = 1280 * 4;
                 (*header).format = 0; // RGBA
                 (*header).resizemode = 1; // Linear
                 (*header).mirrormode = 0;
@@ -89,6 +95,7 @@ impl PhoCastCameraWriter {
 
                 Some(Self {
                     h_mutex,
+                    h_want,
                     h_sent,
                     h_file,
                     header,
@@ -96,6 +103,7 @@ impl PhoCastCameraWriter {
                 })
             } else {
                 if !h_mutex.is_null() { CloseHandle(h_mutex); }
+                if !h_want.is_null() { CloseHandle(h_want); }
                 if !h_sent.is_null() { CloseHandle(h_sent); }
                 CloseHandle(h_file);
                 None
@@ -103,7 +111,7 @@ impl PhoCastCameraWriter {
         }
     }
 
-    pub fn send_frame(&mut self, width: usize, height: usize, rgba_bytes: &[u8]) {
+    fn send_frame(&mut self, width: usize, height: usize, rgba_bytes: &[u8]) {
         unsafe {
             if self.header.is_null() || self.data_ptr.is_null() { return; }
 
@@ -133,7 +141,7 @@ impl PhoCastCameraWriter {
     }
 }
 
-impl Drop for PhoCastCameraWriter {
+impl Drop for DeviceSlot {
     fn drop(&mut self) {
         unsafe {
             if !self.header.is_null() {
@@ -141,7 +149,57 @@ impl Drop for PhoCastCameraWriter {
             }
             if !self.h_file.is_null() { CloseHandle(self.h_file); }
             if !self.h_mutex.is_null() { CloseHandle(self.h_mutex); }
+            if !self.h_want.is_null() { CloseHandle(self.h_want); }
             if !self.h_sent.is_null() { CloseHandle(self.h_sent); }
+        }
+    }
+}
+
+pub struct PhoCastCameraWriter {
+    slots: Vec<DeviceSlot>,
+}
+
+unsafe impl Send for PhoCastCameraWriter {}
+unsafe impl Sync for PhoCastCameraWriter {}
+
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+impl PhoCastCameraWriter {
+    pub fn try_open() -> Option<Self> {
+        let mut slots = Vec::new();
+
+        // Slot 0: Capture Device #1 (Official UnityCapture naming without suffix)
+        if let Some(slot) = DeviceSlot::try_create(
+            "UnityCapture_Mutx",
+            "UnityCapture_Want",
+            "UnityCapture_Sent",
+            "UnityCapture_Data",
+        ) {
+            slots.push(slot);
+        }
+
+        // Slot 1: Capture Device #0 (With suffix '0')
+        if let Some(slot) = DeviceSlot::try_create(
+            "UnityCapture_Mutx0",
+            "UnityCapture_Want0",
+            "UnityCapture_Sent0",
+            "UnityCapture_Data0",
+        ) {
+            slots.push(slot);
+        }
+
+        if slots.is_empty() {
+            None
+        } else {
+            Some(Self { slots })
+        }
+    }
+
+    pub fn send_frame(&mut self, width: usize, height: usize, rgba_bytes: &[u8]) {
+        for slot in &mut self.slots {
+            slot.send_frame(width, height, rgba_bytes);
         }
     }
 }
