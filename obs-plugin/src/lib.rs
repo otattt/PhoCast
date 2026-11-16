@@ -255,6 +255,34 @@ impl PhoCastSource {
     }
 }
 
+fn ensure_adb_forward(port: u16) {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let port_str = port.to_string();
+    let candidates = [
+        "adb".to_string(),
+        format!(
+            "{}\\Android\\Sdk\\platform-tools\\adb.exe",
+            std::env::var("LOCALAPPDATA").unwrap_or_default()
+        ),
+        "C:\\Program Files (x86)\\PhoCast\\tools\\adb\\adb.exe".to_string(),
+        "C:\\Program Files\\PhoCast\\tools\\adb\\adb.exe".to_string(),
+    ];
+
+    for path in &candidates {
+        if let Ok(mut child) = Command::new(path)
+            .args(["forward", &format!("tcp:{}", port_str), &format!("tcp:{}", port_str)])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+        {
+            let _ = child.wait();
+            break;
+        }
+    }
+}
+
 fn network_loop(
     slot: Arc<FrameSlot>,
     running: Arc<AtomicBool>,
@@ -270,6 +298,10 @@ fn network_loop(
         };
         let port = port_arc.load(Ordering::SeqCst);
         let addr_str = format!("{}:{}", ip, port);
+
+        if ip == "127.0.0.1" || ip == "localhost" {
+            ensure_adb_forward(port);
+        }
 
         let stream = match addr_str.parse::<SocketAddr>() {
             Ok(addr) => TcpStream::connect_timeout(&addr, Duration::from_millis(1500)),

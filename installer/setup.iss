@@ -40,6 +40,10 @@ Source: "..\obs-plugin\target\release\phocast_obs.dll"; DestDir: "{app}\obs-plug
 Source: "..\obs-plugin\target\release\phocast_obs.dll"; DestDir: "{autopf}\obs-studio\obs-plugins\64bit"; Flags: ignoreversion uninsremovereadonly; Check: DirExists(ExpandConstant('{autopf}\obs-studio\obs-plugins\64bit'))
 ; Driver Cleaner Tool
 Source: "..\clean_driver.bat"; DestDir: "{app}"; Flags: ignoreversion
+; USB Bridge Tool
+Source: "..\start_usb_mode.bat"; DestDir: "{app}"; Flags: ignoreversion
+; Bundled ADB platform-tools
+Source: "..\tools\adb\*"; DestDir: "{app}\tools\adb"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Documentation
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
