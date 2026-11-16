@@ -1,14 +1,16 @@
 use std::ffi::c_void;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Memory::{
-    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS,
+    CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
+    MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenEventW, OpenMutexW, ReleaseMutex, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE,
-    INFINITE,
+    CreateEventW, CreateMutexW, OpenEventW, OpenMutexW, ReleaseMutex, SetEvent, WaitForSingleObject,
+    EVENT_ALL_ACCESS, MUTEX_ALL_ACCESS,
 };
 
-const SYNCHRONIZE: u32 = 0x0010_0000;
+const TOTAL_SIZE: u32 = 70778880; // 0x4380000 (UnityCapture standard buffer: 4K FP16 + header)
+const MAX_IMAGE_SIZE: u32 = 66355200; // 0x3f48000
 
 #[repr(C)]
 pub struct SharedMemHeader {
@@ -16,9 +18,9 @@ pub struct SharedMemHeader {
     pub width: i32,
     pub height: i32,
     pub stride: i32,
-    pub format: i32,
-    pub resizemode: i32,
-    pub mirrormode: i32,
+    pub format: i32,      // 0 = FORMAT_UINT8 (RGBA)
+    pub resizemode: i32,  // 1 = RESIZEMODE_LINEAR
+    pub mirrormode: i32,  // 0 = DISABLED
     pub timeout: i32,
 }
 
@@ -40,57 +42,80 @@ fn to_wide(s: &str) -> Vec<u16> {
 impl PhoCastCameraWriter {
     pub fn try_open() -> Option<Self> {
         unsafe {
-            // Check possible slot names: UnityCapture_Data, UnityCapture_Data0, UnityCapture_Data1
-            let name_pairs = [
-                ("UnityCapture_Mutx", "UnityCapture_Sent", "UnityCapture_Data"),
-                ("UnityCapture_Mutx0", "UnityCapture_Sent0", "UnityCapture_Data0"),
-                ("UnityCapture_Mutx1", "UnityCapture_Sent1", "UnityCapture_Data1"),
-            ];
+            let data_w = to_wide("UnityCapture_Data0");
+            let mutx_w = to_wide("UnityCapture_Mutx0");
+            let sent_w = to_wide("UnityCapture_Sent0");
 
-            for (mutx_name, sent_name, data_name) in name_pairs {
-                let data_w = to_wide(data_name);
-                let h_file = OpenFileMappingW(FILE_MAP_WRITE, 0, data_w.as_ptr());
-                if !h_file.is_null() {
-                    let mutx_w = to_wide(mutx_name);
-                    let sent_w = to_wide(sent_name);
-
-                    let h_mutex = OpenMutexW(SYNCHRONIZE, 0, mutx_w.as_ptr());
-                    let h_sent = OpenEventW(EVENT_MODIFY_STATE, 0, sent_w.as_ptr());
-
-                    if !h_mutex.is_null() && !h_sent.is_null() {
-                        let view = MapViewOfFile(h_file, FILE_MAP_WRITE, 0, 0, 0);
-                        if !view.Value.is_null() {
-                            let header = view.Value as *mut SharedMemHeader;
-                            let data_ptr = (view.Value as usize + std::mem::size_of::<SharedMemHeader>()) as *mut u8;
-                            return Some(Self {
-                                h_mutex,
-                                h_sent,
-                                h_file,
-                                header,
-                                data_ptr,
-                            });
-                        }
-                    }
-                    if !h_mutex.is_null() { CloseHandle(h_mutex); }
-                    if !h_sent.is_null() { CloseHandle(h_sent); }
-                    CloseHandle(h_file);
-                }
+            // 1. Open or create shared memory file mapping
+            let mut h_file = OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, data_w.as_ptr());
+            if h_file.is_null() {
+                h_file = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    std::ptr::null(),
+                    PAGE_READWRITE,
+                    0,
+                    TOTAL_SIZE,
+                    data_w.as_ptr(),
+                );
             }
-            None
+
+            if h_file.is_null() {
+                return None;
+            }
+
+            // 2. Open or create Mutex
+            let mut h_mutex = OpenMutexW(MUTEX_ALL_ACCESS, 0, mutx_w.as_ptr());
+            if h_mutex.is_null() {
+                h_mutex = CreateMutexW(std::ptr::null(), 0, mutx_w.as_ptr());
+            }
+
+            // 3. Open or create Sent Event
+            let mut h_sent = OpenEventW(EVENT_ALL_ACCESS, 0, sent_w.as_ptr());
+            if h_sent.is_null() {
+                h_sent = CreateEventW(std::ptr::null(), 0, 0, sent_w.as_ptr());
+            }
+
+            // 4. Map the memory view into our address space
+            let view = MapViewOfFile(h_file, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+            if !view.Value.is_null() {
+                let header = view.Value as *mut SharedMemHeader;
+                (*header).max_size = MAX_IMAGE_SIZE;
+                (*header).format = 0; // RGBA
+                (*header).resizemode = 1; // Linear
+                (*header).mirrormode = 0;
+                (*header).timeout = 1000;
+
+                let data_ptr = (view.Value as usize + std::mem::size_of::<SharedMemHeader>()) as *mut u8;
+
+                Some(Self {
+                    h_mutex,
+                    h_sent,
+                    h_file,
+                    header,
+                    data_ptr,
+                })
+            } else {
+                if !h_mutex.is_null() { CloseHandle(h_mutex); }
+                if !h_sent.is_null() { CloseHandle(h_sent); }
+                CloseHandle(h_file);
+                None
+            }
         }
     }
 
     pub fn send_frame(&mut self, width: usize, height: usize, rgba_bytes: &[u8]) {
         unsafe {
-            if self.header.is_null() { return; }
+            if self.header.is_null() || self.data_ptr.is_null() { return; }
 
-            WaitForSingleObject(self.h_mutex, INFINITE);
+            if !self.h_mutex.is_null() {
+                WaitForSingleObject(self.h_mutex, 50);
+            }
 
             (*self.header).width = width as i32;
             (*self.header).height = height as i32;
             (*self.header).stride = (width * 4) as i32;
-            (*self.header).format = 0; // FORMAT_UINT8 (RGBA)
-            (*self.header).resizemode = 1; // RESIZEMODE_LINEAR
+            (*self.header).format = 0; // RGBA
+            (*self.header).resizemode = 1;
             (*self.header).mirrormode = 0;
             (*self.header).timeout = 1000;
 
@@ -98,8 +123,12 @@ impl PhoCastCameraWriter {
             let copy_len = rgba_bytes.len().min(if max_data > 0 { max_data } else { rgba_bytes.len() });
             std::ptr::copy_nonoverlapping(rgba_bytes.as_ptr(), self.data_ptr, copy_len);
 
-            ReleaseMutex(self.h_mutex);
-            SetEvent(self.h_sent);
+            if !self.h_mutex.is_null() {
+                ReleaseMutex(self.h_mutex);
+            }
+            if !self.h_sent.is_null() {
+                SetEvent(self.h_sent);
+            }
         }
     }
 }
