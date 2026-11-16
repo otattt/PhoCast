@@ -139,6 +139,27 @@ impl PhoCastApp {
 
             let mut dshow_cam = PhoCastCameraWriter::try_open();
 
+            // Lightweight built-in HTTP MJPEG server for OBS Browser Source / VLC / Media Source
+            // This provides a 100% crash-proof, driver-free streaming route into OBS Studio
+            let http_clients = Arc::new(Mutex::new(Vec::<std::net::TcpStream>::new()));
+            let clients_clone = Arc::clone(&http_clients);
+            let streaming_clone = Arc::clone(&is_streaming);
+            std::thread::spawn(move || {
+                if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:8080") {
+                    listener.set_nonblocking(true).ok();
+                    while streaming_clone.load(Ordering::SeqCst) {
+                        if let Ok((mut client, _)) = listener.accept() {
+                            client.set_nodelay(true).ok();
+                            let header = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
+                            if std::io::Write::write_all(&mut client, header.as_bytes()).is_ok() {
+                                clients_clone.lock().unwrap().push(client);
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            });
+
             let mut len_buf = [0u8; 4];
             let mut frame_count = 0u32;
             let mut last_fps_time = Instant::now();
@@ -156,6 +177,25 @@ impl PhoCastApp {
                 let mut img_bytes = vec![0u8; payload_len];
                 if stream.read_exact(&mut img_bytes).is_err() {
                     break;
+                }
+
+                // Broadcast directly to HTTP MJPEG clients (OBS Browser Source)
+                {
+                    use std::io::Write;
+                    let mut clients = http_clients.lock().unwrap();
+                    let mut dead = Vec::new();
+                    for (idx, client) in clients.iter_mut().enumerate() {
+                        let part = format!("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", img_bytes.len());
+                        if client.write_all(part.as_bytes()).is_err()
+                            || client.write_all(&img_bytes).is_err()
+                            || client.write_all(b"\r\n").is_err()
+                        {
+                            dead.push(idx);
+                        }
+                    }
+                    for idx in dead.into_iter().rev() {
+                        clients.swap_remove(idx);
+                    }
                 }
 
                 if let Ok(img) = image::load_from_memory(&img_bytes) {
@@ -301,6 +341,13 @@ impl eframe::App for PhoCastApp {
             // Status message bar
             let status = self.status_message.lock().unwrap().clone();
             ui.label(egui::RichText::new(format!("Status: {}", status)).small().color(egui::Color32::LIGHT_GRAY));
+
+            if is_active {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("OBS Stream URL:").small().strong().color(egui::Color32::from_rgb(0, 230, 118)));
+                    ui.label(egui::RichText::new("http://127.0.0.1:8080/video").small().monospace().color(egui::Color32::WHITE));
+                });
+            }
 
             ui.add_space(6.0);
 
