@@ -12,6 +12,9 @@ use eframe::egui;
 use image::GenericImageView;
 use virtualcam::{BackendKind, Camera, PixelFormat};
 
+mod unity_capture;
+use unity_capture::PhoCastCameraWriter;
+
 #[derive(PartialEq, Clone, Copy)]
 enum ConnectMode {
     Wifi,
@@ -134,6 +137,8 @@ impl PhoCastApp {
                 }
             }
 
+            let mut dshow_cam = PhoCastCameraWriter::try_open();
+
             let mut len_buf = [0u8; 4];
             let mut frame_count = 0u32;
             let mut last_fps_time = Instant::now();
@@ -160,7 +165,14 @@ impl PhoCastApp {
                     let rgba = img.to_rgba8();
                     let rgba_raw = rgba.into_raw();
 
-                    // Feed to OBS Virtual Camera
+                    // 1. Feed directly into PhoCast Camera (DirectShow for OBS Studio Video Capture Device!)
+                    if let Some(ref mut dshow) = dshow_cam {
+                        dshow.send_frame(w, h, &rgba_raw);
+                    } else {
+                        dshow_cam = PhoCastCameraWriter::try_open();
+                    }
+
+                    // 2. Feed to OBS Virtual Camera (for Zoom / Meet / Discord)
                     if let Some(ref mut cam) = vcam {
                         if w as u32 != vcam_width || h as u32 != vcam_height {
                             vcam_width = w as u32;
