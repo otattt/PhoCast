@@ -2,8 +2,8 @@ package com.phocast.streamer.network
 
 import android.util.Log
 import com.phocast.streamer.camera.H264Encoder
-import java.io.BufferedOutputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
 import kotlin.concurrent.thread
@@ -46,17 +46,21 @@ class StreamServer(
 
     private fun handleClient(clientSocket: Socket) {
         thread(name = "ClientHandler-${clientSocket.inetAddress.hostAddress}") {
-            var bufferedOut: BufferedOutputStream? = null
+            var rawOut: OutputStream? = null
             try {
+                // Disable Nagle's algorithm for immediate packet dispatch
                 clientSocket.tcpNoDelay = true
-                clientSocket.sendBufferSize = 256 * 1024
-                bufferedOut = BufferedOutputStream(clientSocket.getOutputStream(), 128 * 1024)
+                // Keep send buffer minimal (32 KB) so the kernel never accumulates stale frames.
+                // If the link is saturated, writes will block briefly, causing broadcastJpegFrame
+                // to cleanly drop backlog frames at sensor rate (true 0-latency).
+                clientSocket.sendBufferSize = 32 * 1024
+                rawOut = clientSocket.getOutputStream()
                 val input: InputStream = clientSocket.getInputStream()
 
-                encoder.addClient(bufferedOut)
+                encoder.addClient(rawOut)
                 clientCount++
                 onClientCountChanged(clientCount)
-                Log.i(TAG, "Client connected: ${clientSocket.inetAddress.hostAddress}")
+                Log.i(TAG, "Client connected: ${clientSocket.inetAddress.hostAddress} (Zero-Buffer Mode)")
 
                 // Monitor connection status by reading input stream until EOF
                 val dummy = ByteArray(64)
@@ -68,8 +72,8 @@ class StreamServer(
                 Log.w(TAG, "Client disconnected or error: ${e.message}")
             } finally {
                 try {
-                    if (bufferedOut != null) {
-                        encoder.removeClient(bufferedOut)
+                    if (rawOut != null) {
+                        encoder.removeClient(rawOut)
                     }
                     clientSocket.close()
                 } catch (_: Exception) {}

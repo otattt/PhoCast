@@ -128,6 +128,8 @@ struct LibObsApi {
     pub obs_data_get_int: Option<unsafe extern "C" fn(data: *mut c_void, name: *const c_char) -> i64>,
     pub obs_data_set_default_string: Option<unsafe extern "C" fn(data: *mut c_void, name: *const c_char, val: *const c_char)>,
     pub obs_data_set_default_int: Option<unsafe extern "C" fn(data: *mut c_void, name: *const c_char, val: i64)>,
+    pub obs_source_set_async_unbuffered: Option<unsafe extern "C" fn(source: *mut c_void, unbuffered: bool)>,
+    pub obs_source_set_async_decoupled: Option<unsafe extern "C" fn(source: *mut c_void, decoupled: bool)>,
 }
 
 static mut OBS_API: LibObsApi = LibObsApi {
@@ -142,6 +144,8 @@ static mut OBS_API: LibObsApi = LibObsApi {
     obs_data_get_int: None,
     obs_data_set_default_string: None,
     obs_data_set_default_int: None,
+    obs_source_set_async_unbuffered: None,
+    obs_source_set_async_decoupled: None,
 };
 
 static mut OBS_MODULE: *mut c_void = std::ptr::null_mut();
@@ -172,6 +176,8 @@ unsafe fn init_obs_api() {
     resolve!(obs_data_get_int, "obs_data_get_int", unsafe extern "C" fn(*mut c_void, *const c_char) -> i64);
     resolve!(obs_data_set_default_string, "obs_data_set_default_string", unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char));
     resolve!(obs_data_set_default_int, "obs_data_set_default_int", unsafe extern "C" fn(*mut c_void, *const c_char, i64));
+    resolve!(obs_source_set_async_unbuffered, "obs_source_set_async_unbuffered", unsafe extern "C" fn(*mut c_void, bool));
+    resolve!(obs_source_set_async_decoupled, "obs_source_set_async_decoupled", unsafe extern "C" fn(*mut c_void, bool));
 }
 
 // ============================================================================
@@ -267,6 +273,7 @@ fn ensure_adb_forward(port: u16) {
             "{}\\Android\\Sdk\\platform-tools\\adb.exe",
             std::env::var("LOCALAPPDATA").unwrap_or_default()
         ),
+        "C:\\Users\\Dou\\.gemini\\antigravity\\scratch\\PhoCast\\tools\\adb\\adb.exe".to_string(),
         "C:\\Program Files (x86)\\PhoCast\\tools\\adb\\adb.exe".to_string(),
         "C:\\Program Files\\PhoCast\\tools\\adb\\adb.exe".to_string(),
     ];
@@ -441,6 +448,16 @@ unsafe extern "C" fn phocast_create(settings: *mut c_void, source: *mut c_void) 
         if val > 0 && val <= 65535 {
             port = val as u16;
         }
+    }
+
+    // Enable zero-latency unbuffered mode & decoupled rendering
+    // By default, OBS puts async video sources into a ~300ms smoothing jitter queue.
+    // Setting unbuffered to true bypasses OBS's internal buffer completely.
+    if let Some(unbuf_fn) = OBS_API.obs_source_set_async_unbuffered {
+        unbuf_fn(source, true);
+    }
+    if let Some(decouple_fn) = OBS_API.obs_source_set_async_decoupled {
+        decouple_fn(source, true);
     }
 
     let instance = PhoCastSource::new(source, ip, port);
