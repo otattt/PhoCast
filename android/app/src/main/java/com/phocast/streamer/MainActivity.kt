@@ -35,7 +35,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        encoder = H264Encoder(width = 1920, height = 1080, fps = 30, bitrate = 4_000_000)
+        encoder = H264Encoder(width = 1280, height = 720, fps = 30, bitrate = 2_500_000)
         cameraManager = CameraManager(this, this, binding.previewView, encoder)
 
         setupUI()
@@ -102,6 +102,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun enterKeepCoolMode() {
+        cameraManager.setKeepCoolMode(true)
         binding.layoutDimOverlay.visibility = android.view.View.VISIBLE
         binding.previewView.visibility = android.view.View.INVISIBLE
         val lp = window.attributes
@@ -110,6 +111,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun exitKeepCoolMode() {
+        cameraManager.setKeepCoolMode(false)
         binding.layoutDimOverlay.visibility = android.view.View.GONE
         binding.previewView.visibility = android.view.View.VISIBLE
         val lp = window.attributes

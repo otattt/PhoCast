@@ -142,6 +142,7 @@
                         style="@style/Widget.MaterialComponents.Chip.Choice"
                         android:layout_width="wrap_content"
                         android:layout_height="32dp"
+                        android:checked="true"
                         android:text="720p"
                         android:textColor="#FFFFFF"
                         android:textSize="11sp" />
@@ -151,7 +152,6 @@
                         style="@style/Widget.MaterialComponents.Chip.Choice"
                         android:layout_width="wrap_content"
                         android:layout_height="32dp"
-                        android:checked="true"
                         android:text="1080p"
                         android:textColor="#FFFFFF"
                         android:textSize="11sp" />

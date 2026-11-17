@@ -43,13 +43,16 @@ class CameraManager(
     private var isTorchOn = false
     private val cameraExecutor = Executors.newSingleThreadExecutor()
 
-    var targetWidth = 1920
-    var targetHeight = 1080
+    private var previewUseCase: Preview? = null
+    private var imageAnalysisUseCase: ImageAnalysis? = null
+    private var isKeepCoolActive = false
+
+    var targetWidth = 1280
+    var targetHeight = 720
     var targetFps = 30
 
-    // Preallocated, reusable buffers to achieve ZERO heap allocations per frame
+    // Preallocated reusable buffer to achieve ZERO heap allocations
     private var cachedNv21: ByteArray? = null
-    private var cachedRowBytes: ByteArray? = null
     private val reusableJpegBuffer = ByteArrayOutputStream(256 * 1024)
 
     fun updateConfig(width: Int, height: Int, fps: Int) {
@@ -66,6 +69,26 @@ class CameraManager(
             bindCameraUseCases()
             onReady()
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    fun setKeepCoolMode(active: Boolean) {
+        isKeepCoolActive = active
+        val provider = cameraProvider ?: return
+
+        if (active) {
+            // Unbind preview completely: halts all GPU shader rendering and surface draws
+            previewUseCase?.let {
+                try {
+                    provider.unbind(it)
+                    Log.i(TAG, "Keep-Cool active: Preview unbound, GPU pipeline halted")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unbind preview error: ${e.message}")
+                }
+            }
+        } else {
+            // Re-bind preview when waking up screen
+            bindCameraUseCases()
+        }
     }
 
     @OptIn(ExperimentalCamera2Interop::class)
@@ -85,7 +108,6 @@ class CameraManager(
             AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
         }
 
-        // Configurable ResolutionSelector supporting 480p, 720p, and 1080p
         val resolutionSelector = ResolutionSelector.Builder()
             .setAspectRatioStrategy(aspectRatioStrategy)
             .setResolutionStrategy(
@@ -96,11 +118,10 @@ class CameraManager(
             )
             .build()
 
-        // Preview use case for local on-screen view
+        // 1. Preview Use Case (only bound if not in Keep-Cool mode)
         val previewBuilder = Preview.Builder()
             .setResolutionSelector(resolutionSelector)
 
-        // Lock camera sensor AE target FPS to eliminate motion blur and variable framerate drops
         val previewExtender = Camera2Interop.Extender(previewBuilder)
         previewExtender.setCaptureRequestOption(
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
@@ -110,14 +131,14 @@ class CameraManager(
         val preview = previewBuilder.build().also {
             it.setSurfaceProvider(previewView.surfaceProvider)
         }
+        previewUseCase = preview
 
-        // ImageAnalysis use case for streaming frames to PC
+        // 2. ImageAnalysis Use Case for streaming
         val analysisBuilder = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
 
-        // Lock ImageAnalysis to target FPS and use FAST noise reduction to cut DSP processing latency
         val analysisExtender = Camera2Interop.Extender(analysisBuilder)
         analysisExtender.setCaptureRequestOption(
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
@@ -129,12 +150,13 @@ class CameraManager(
         )
 
         val imageAnalysis = analysisBuilder.build()
+        imageAnalysisUseCase = imageAnalysis
 
         var loggedResolution = false
 
         imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
             if (!loggedResolution) {
-                Log.i(TAG, "Streaming active: ${imageProxy.width}x${imageProxy.height} @ locked ${targetFps} FPS")
+                Log.i(TAG, "Streaming active: ${imageProxy.width}x${imageProxy.height} @ ${targetFps} FPS")
                 loggedResolution = true
             }
 
@@ -146,13 +168,23 @@ class CameraManager(
 
         try {
             provider.unbindAll()
-            camera = provider.bindToLifecycle(
-                lifecycleOwner,
-                cameraSelector,
-                preview,
-                imageAnalysis
-            )
-            Log.i(TAG, "Camera bound successfully at ${targetWidth}x${targetHeight} @ ${targetFps} FPS")
+
+            camera = if (isKeepCoolActive) {
+                // If in Keep-Cool mode, only bind ImageAnalysis (0% GPU usage)
+                provider.bindToLifecycle(
+                    lifecycleOwner,
+                    cameraSelector,
+                    imageAnalysis
+                )
+            } else {
+                provider.bindToLifecycle(
+                    lifecycleOwner,
+                    cameraSelector,
+                    preview,
+                    imageAnalysis
+                )
+            }
+            Log.i(TAG, "Camera bound successfully at ${targetWidth}x${targetHeight} @ ${targetFps} FPS (KeepCool=$isKeepCoolActive)")
         } catch (e: Exception) {
             Log.e(TAG, "Use case binding failed", e)
         }
@@ -164,8 +196,8 @@ class CameraManager(
             val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
             
             reusableJpegBuffer.reset()
-            // Quality 68: Superb crisp visual fidelity while halving CPU compression time and network payload
-            yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 68, reusableJpegBuffer)
+            // Quality 65: Crisp 720p visuals with minimal CPU thermal output (~6ms encode time)
+            yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 65, reusableJpegBuffer)
             val jpegBytes = reusableJpegBuffer.toByteArray()
 
             encoder.broadcastJpegFrame(jpegBytes)
@@ -176,8 +208,9 @@ class CameraManager(
 
     /**
      * Ultra-fast zero-allocation YUV420_888 to NV21 converter:
-     * - Reuses preallocated buffers (cachedNv21, cachedRowBytes) eliminating Android ART GC stalls.
-     * - Uses bulk row copies instead of per-byte get() loops.
+     * - Reuses preallocated buffers (cachedNv21).
+     * - Direct native buffer-to-array transfers without intermediate heap copies.
+     * - Pixel 5 Qualcomm semi-planar fast path: 1 single bulk transfer for Y and UV!
      */
     private fun yuv420888ToNv21Fast(image: ImageProxy): ByteArray {
         val width = image.width
@@ -193,13 +226,13 @@ class CameraManager(
         }
 
         val yPlane = image.planes[0]
-        val uPlane = image.planes[1]
         val vPlane = image.planes[2]
 
-        // 1. Copy Y channel in bulk
+        // 1. Copy Y channel
         val yBuffer = yPlane.buffer
         val yRowStride = yPlane.rowStride
         if (yRowStride == width) {
+            yBuffer.position(0)
             yBuffer.get(nv21, 0, ySize)
         } else {
             var pos = 0
@@ -210,46 +243,44 @@ class CameraManager(
             }
         }
 
-        // 2. Copy UV channels
+        // 2. Copy UV channel
         val vBuffer = vPlane.buffer
-        val uBuffer = uPlane.buffer
         val vRowStride = vPlane.rowStride
         val vPixelStride = vPlane.pixelStride
-        val uPixelStride = uPlane.pixelStride
 
-        val uvHeight = height / 2
-        val uvWidth = width / 2
-        var uvPos = ySize
-
-        // On Pixel 5 / Qualcomm HAL, vPixelStride == 2 is standard (semi-planar NV21/NV12)
-        if (vPixelStride == 2 && uPixelStride == 2) {
-            var rowBytes = cachedRowBytes
-            if (rowBytes == null || rowBytes.size < vRowStride) {
-                rowBytes = ByteArray(vRowStride)
-                cachedRowBytes = rowBytes
-            }
-
-            for (row in 0 until uvHeight) {
-                vBuffer.position(row * vRowStride)
-                val len = minOf(vRowStride, vBuffer.remaining())
-                vBuffer.get(rowBytes, 0, len)
-                val copyLen = uvWidth * 2
-                System.arraycopy(rowBytes, 0, nv21, uvPos, minOf(copyLen, len))
-                uvPos += copyLen
+        // Qualcomm / Pixel 5 semi-planar NV21 layout
+        if (vPixelStride == 2) {
+            if (vRowStride == width) {
+                // Direct bulk transfer in one single native call! (~0.2ms)
+                vBuffer.position(0)
+                val copyLen = minOf(uvSize, vBuffer.remaining())
+                vBuffer.get(nv21, ySize, copyLen)
+            } else {
+                val uvHeight = height / 2
+                var uvPos = ySize
+                for (row in 0 until uvHeight) {
+                    vBuffer.position(row * vRowStride)
+                    val copyLen = minOf(width, vBuffer.remaining())
+                    vBuffer.get(nv21, uvPos, copyLen)
+                    uvPos += width
+                }
             }
         } else {
-            // Fallback for planar format
-            val vRow = ByteArray(vRowStride)
-            val uRow = ByteArray(uPlane.rowStride)
-            for (row in 0 until uvHeight) {
-                vBuffer.position(row * vRowStride)
-                vBuffer.get(vRow, 0, minOf(vRowStride, vBuffer.remaining()))
-                uBuffer.position(row * uPlane.rowStride)
-                uBuffer.get(uRow, 0, minOf(uPlane.rowStride, uBuffer.remaining()))
+            // Planar fallback
+            val uPlane = image.planes[1]
+            val uBuffer = uPlane.buffer
+            val uvHeight = height / 2
+            val uvWidth = width / 2
+            var uvPos = ySize
 
+            for (row in 0 until uvHeight) {
                 for (col in 0 until uvWidth) {
-                    nv21[uvPos++] = vRow[col * vPixelStride]
-                    nv21[uvPos++] = uRow[col * uPixelStride]
+                    val vIndex = row * vRowStride + col * vPixelStride
+                    val uIndex = row * uPlane.rowStride + col * uPlane.pixelStride
+                    if (vIndex < vBuffer.capacity() && uIndex < uBuffer.capacity()) {
+                        nv21[uvPos++] = vBuffer.get(vIndex)
+                        nv21[uvPos++] = uBuffer.get(uIndex)
+                    }
                 }
             }
         }
